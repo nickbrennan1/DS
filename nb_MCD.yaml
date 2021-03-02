@@ -1,0 +1,93 @@
+# ebdse -v run type=cql yaml=baselines/cql-keyvalue tags=phase:schema host=dsehost
+bindings:
+  seq_partyid: Mod(<<keycount:100000>>); ToString() -> String
+  seq_recordtype: Mod(<<valuecount:10000>>); ToString() -> String
+  seq_categorycode: WeightedStrings('Gryffindor:0.2;Hufflepuff:0.3;Ravenclaw:0.2;Slytherin:0.7')
+  seq_typecode: Hash(); Mod(<<valuecount:100000>>); ToString() -> String
+  seq_subsegmentcode: Hash(); Mod(<<valuecount:100000>>); ToString() -> String
+  seq_category:  Set(HashRange(1,5), Uniform(0,20000); -> long -> ToLong();)
+  rw_partyid: <<keydist:Uniform(10500,1000000000)->int>>; ToString() -> String
+  rw_recordtype: <<valdist:Uniform(0,100000)->int>>; ToString() -> String
+  rw_categorycode: Hash(); <<valdist:Uniform(0,1000000000)->int>>; ToString() -> String
+  rw_typecode: Hash(); <<valdist:Uniform(100,1000000)->int>>; ToString() -> String
+  rw_subsegmentcode: Hash(); <<valdist:Uniform(12000,50000)->int>>; ToString() -> String
+  rw_category:  Set(HashRange(1,5), Uniform(0,2000); -> long -> ToLong();)
+
+blocks:
+  - name: schema
+    tags:
+      phase: schema
+    params:
+      prepared: false
+    statements:
+    - create-keyspace: |
+        create keyspace if not exists <<keyspace:McDs>>
+        WITH replication = {'class': 'NetworkTopologyStrategy', 'Analytics': '<<rf:2>>'}
+        AND durable_writes = true;
+      tags:
+         name: create-keyspace
+    - create-table: |
+        create table if not exists <<keyspace:McDs>>.<<table:ron>> (
+        partyid text,
+        recordtype text,
+        categorycode text,
+        typecode text,
+        subsegmentcode text,
+        category set<int>,
+        consentcode text,
+        entity text,
+        location text,
+        PRIMARY KEY (partyid,categorycode)
+        ) WITH CLUSTERING ORDER BY (categorycode ASC)
+        ;
+      tags:
+        name: create-table
+  - name: rampup
+    tags:
+      phase: rampup
+    params:
+      cl: <<write_cl:LOCAL_QUORUM>>
+    statements:
+      - rampup-insert: |
+          insert into <<keyspace:McDs>>.<<table:ron>>
+          (partyid,recordtype, categorycode, typecode, subsegmentcode,category)
+          values ({seq_partyid},{seq_recordtype},{seq_categorycode},{seq_typecode},{seq_subsegmentcode},{rw_category});
+        tags:
+           name: rampup-insert
+  - name: verify
+    tags:
+      phase: verify
+      type: read
+    params:
+      cl: <<read_cl:LOCAL_QUORUM>>
+    statements:
+      - verify-select: |
+          select  from <<keyspace:McDs>>.<<table:ron>> where partyid={seq_partyid};
+        verify-fields: partyid->seq_partyid
+        tags:
+           name: verify
+  - name: main-read
+    tags:
+      phase: main
+      type: read
+    params:
+      ratio: 5
+      cl: <<read_cl:LOCAL_QUORUM>>
+    statements:
+      - main-select: |
+         select * from <<keyspace:McDs>>.<<table:ron>> where partyid={seq_partyid};
+        tags:
+          name: main-select
+  - name: main-write
+    tags:
+      phase: main
+      type: write
+    params:
+      ratio: 5
+      cl: <<write_cl:LOCAL_QUORUM>>
+    statements:
+      - main-insert: |
+          insert into <<keyspace:McDs>>.<<table:ron>>
+          (partyid,recordtype, categorycode, typecode, subsegmentcode,category) values ({rw_partyid},{rw_recordtype},{rw_categorycode},{rw_typecode},{rw_subsegmentcode},{rw_category});
+        tags:
+           name: main-insert

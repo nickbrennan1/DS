@@ -1,0 +1,127 @@
+description: ''
+scenarios:
+  default:
+    - 'run driver=cql tags==phase:schema threads==1 cycles==UNDEF'
+    - >-
+      run driver=cql tags==phase:rampup
+      cycles===TEMPLATE(rampup-cycles,10000000) threads=1000
+    - >-
+      run driver=cql tags==phase:main cycles===TEMPLATE(main-cycles,10000000)
+      threads=25
+  main:
+    - >-
+      run driver=cql tags==phase:main cycles===TEMPLATE(main-cycles,100000)
+      threads=25
+bindings:
+  current_run_id: 'ToEpochTimeUUID(''2017-01-01 23:59:59'')'
+  checksum: HashedToByteBuffer(500)
+  checksum_encoding: ToString()
+  run_id: 'ToEpochTimeUUID(''2017-01-01 23:59:59'')'
+  execution_state: HashedToByteBuffer(1024);
+  execution: HashedToByteBuffer(1024)
+  execution_encoding: ToString()
+  execution_state_encoding: ToString()
+  namespace_id: 'ToEpochTimeUUID(''2017-01-01 23:59:59'')'
+  next_event_id: Identity() -> long
+  shard_id: ToInt();
+  type: ToInt();
+  workflow_id: <<valdist:Uniform(0,100000)->int>>; ToString() -> String
+  workflow_last_write_version: Identity() -> long
+  workflow_state: ToInt();
+  visibility_ts: >-
+   Div(TEMPLATE(encodings,3)L);
+   Div(TEMPLATE(streams,100)L);
+   Mul(1000L);
+   StartingEpochMillis('2020-09-25 00:00:00');
+   ToMillisAtStartOfSecond();
+   SaveLong('timebase');
+   ToDate();
+  task_id: Identity() -> long
+
+blocks:
+  - tags:
+      phase: schema
+    params:
+      prepared: false
+    statements:
+      - create-executions-table: |-
+          CREATE TABLE IF NOT EXISTS temporal.executions (
+          shard_id int,
+          type int,
+          namespace_id uuid,
+          workflow_id text,
+          run_id uuid,
+          visibility_ts timestamp,
+          task_id bigint,
+          activity_map map<bigint, blob>,
+          activity_map_encoding text,
+          checksum blob,
+          checksum_encoding text,
+          child_executions_map map<bigint, blob>,
+          child_executions_map_encoding text,
+          current_run_id uuid,
+          execution blob,
+          execution_encoding text,
+          execution_state blob,
+          execution_state_encoding text,
+          next_event_id bigint,
+          range_id bigint,
+          replication blob,
+          replication_encoding text,
+          request_cancel_map map<bigint, blob>,
+          request_cancel_map_encoding text,
+          shard blob,
+          shard_encoding text,
+          signal_map map<bigint, blob>,
+          signal_map_encoding text,
+          signal_requested set<uuid>,
+          timer blob,
+          timer_encoding text,
+          timer_map map<text, blob>,
+          timer_map_encoding text,
+          transfer blob,
+          transfer_encoding text,
+          visibility_task_data blob,
+          visibility_task_encoding text,
+          workflow_last_write_version bigint,
+          workflow_state int,
+          PRIMARY KEY (shard_id, type, namespace_id, run_id, visibility_ts, task_id)
+          ) WITH CLUSTERING ORDER BY (type ASC, namespace_id ASC, run_id ASC, visibility_ts ASC, task_id ASC);
+  - tags:
+      phase: rampup
+    params:
+      cl: '<<write_cl:LOCAL_QUORUM>>'
+      instrument: true
+    statements:
+      - insert-1: |-
+          INSERT INTO <<keyspace:temporal>>.executions (
+          shard_id, namespace_id, workflow_id, run_id, type, execution, execution_encoding, execution_state, execution_state_encoding, next_event_id,
+          visibility_ts, task_id, checksum, checksum_encoding, current_run_id, workflow_last_write_version,workflow_state) VALUES (
+          {shard_id}, {namespace_id}, {workflow_id}, {run_id}, {type}, {execution}, {execution_encoding}, {execution_state}, {execution_state_encoding},
+          {next_event_id}, {visibility_ts}, {task_id}, {checksum}, {checksum_encoding}, {current_run_id}, {workflow_last_write_version}, {workflow_state}
+          );
+  - tags:
+      phase: main
+      type: write
+    params:
+      ratio: <<write_ratio:1>>
+      cl: '<<write_cl:LOCAL_QUORUM>>'
+      instrument: true
+    statements:
+      - update-main: |-
+          UPDATE <<keyspace:temporal>>.executions USING TTL 0 SET
+          current_run_id={current_run_id}, execution_state={execution_state}, execution_state_encoding={execution_state_encoding},
+          workflow_last_write_version={workflow_last_write_version},workflow_state={workflow_state},execution={execution},checksum={checksum}
+          WHERE shard_id={shard_id} AND type={type} AND namespace_id={namespace_id} 
+          AND run_id={run_id} AND visibility_ts={visibility_ts} and task_id={task_id} IF current_run_id={current_run_id};
+  - tags:
+      phase: main
+      type: read
+    params:
+      ratio: <<read_partition_ratio:1>>
+      cl: '<<read_cl:LOCAL_QUORUM>>'
+      instrument: true
+    statements:
+      - read-executions: >-
+          SELECT shard_id from <<keyspace:temporal>>.executions WHERE
+          shard_id={shard_id} AND type={type} AND namespace_id={namespace_id} AND run_id={run_id} AND visibility_ts={visibility_ts} and task_id={task_id} ;
